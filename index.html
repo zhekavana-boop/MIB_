@@ -173,19 +173,107 @@ header,nav{backdrop-filter:none;-webkit-backdrop-filter:none;background:var(--bg
 <div class="bg" aria-hidden="true"><i></i><i></i></div>
 <div id="app"></div>
 <div id="splash" role="presentation"><span class="logo">MIB</span><p>Будь поруч</p><div class="sp"><i></i></div></div>
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-app.js";
+import { getDatabase, ref, get, set, onValue } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCCUu0OZ5HzvisR7bw01APes8WmjsfbCPs",
+  authDomain: "mibb-6f734.firebaseapp.com",
+  projectId: "mibb-6f734",
+  storageBucket: "mibb-6f734.firebasestorage.app",
+  messagingSenderId: "755633400822",
+  appId: "1:755633400822:web:3edbfd4975f8552040f5d7",
+  measurementId: "G-EF8BRC779Y",
+  databaseURL: "https://mibb-6f734-default-rtdb.europe-west1.firebasedatabase.app"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const stateRef = ref(db, "mib_state");
+
 const K="mib:v2",$=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const LS=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}};
-let D=LS(K,null)||{users:{},posts:[],follow:{},chats:{},notifs:[],id:1},SID=LS("mib:s",null);
+let D=LS(K,null)||{users:{},posts:[],follow:{},chats:{},notifs:[],id:1,gifts:[]},SID=LS("mib:s",null);
 if(!D.users[SID])SID=null;
 D.gifts=D.gifts||[];Object.values(D.users).forEach(u=>{if(u.bal==null)u.bal=10;u.own=u.own||[];u.eq=u.eq||{}});
 const GF={star:["⭐","Зірка",1],rose:["🌹","Троянда",2],bear:["🧸","Ведмедик",5],gem:["💎","Діамант",10]};
 const SH={fr_gold:["fr","Золота рамка",5],fr_neon:["fr","Неонова рамка",8],fr_fire:["fr","Вогняна рамка",10],th_sun:["th","Захід сонця",6,"linear-gradient(110deg,#FF8A00,#FF3D77,#7A2CF5)"],th_sea:["th","Океан",6,"linear-gradient(110deg,#00B4DB,#0083B0,#5B3DF0)"],th_night:["th","Нічне небо",8,"linear-gradient(110deg,#0F2027,#203A43,#5B3DF0)"],bd_star:["bd","Зірка",4,"⭐"],bd_fire:["bd","Вогник",6,"🔥"],bd_rocket:["bd","Ракета",7,"🚀"],bd_crown:["bd","Корона",10,"👑"]};
 const vib=n=>{try{navigator.vibrate&&navigator.vibrate(n)}catch(e){}},hp=()=>{try{history.pushState({m:1},"")}catch(e){}};
 function toast(m){const t=document.createElement("div");t.className="toast";t.setAttribute("role","status");t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2800)}
-const save=()=>{try{localStorage.setItem(K,JSON.stringify(D))}catch(e){toast("Сховище переповнене")}};
+
+let pulling=false,dbOnline=false;
+function mergeRemote(remote){
+  if(!remote||typeof remote!=="object")return;
+  dbOnline=true;
+  const prevLen=D.posts.length;
+  D.users={...(remote.users||{}),...(D.users||{})};
+  const pMap=new Map();
+  for(const p of (remote.posts||[]))if(p&&p.id)pMap.set(p.id,{...p,l:[...(p.l||[])],c:[...(p.c||[])]});
+  for(const p of (D.posts||[])){
+    if(!p||!p.id)continue;
+    if(!pMap.has(p.id))pMap.set(p.id,{...p,l:[...(p.l||[])],c:[...(p.c||[])]});
+    else{
+      const ex=pMap.get(p.id);
+      ex.l=[...new Set([...(ex.l||[]),...(p.l||[])])];
+      const seen=new Set((ex.c||[]).map(x=>x.ts+"|"+x.u+"|"+x.t));
+      for(const cm of (p.c||[])){const k=cm.ts+"|"+cm.u+"|"+cm.t;if(!seen.has(k)){ex.c.push(cm);seen.add(k)}}
+    }
+  }
+  D.posts=[...pMap.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  D.follow={...(remote.follow||{})};
+  for(const k of Object.keys(LS(K,{}).follow||{})){
+    D.follow[k]=[...new Set([...(D.follow[k]||[]),...((LS(K,{}).follow||{})[k]||[])])];
+  }
+  D.chats={...(remote.chats||{})};
+  for(const k of Object.keys((LS(K,{}).chats||{}))){
+    const rc=D.chats[k],lc=((LS(K,{}).chats)||{})[k];
+    if(!rc){D.chats[k]=lc;continue}
+    const seen=new Set((rc.m||[]).map(x=>x.ts+"|"+x.f+"|"+x.t));
+    const ms=[...(rc.m||[])];
+    for(const msg of (lc.m||[])){const mk=msg.ts+"|"+msg.f+"|"+msg.t;if(!seen.has(mk)){ms.push(msg);seen.add(mk)}}
+    ms.sort((a,b)=>(a.ts||0)-(b.ts||0));
+    D.chats[k]={...rc,...lc,m:ms,n:Math.max(rc.n||0,lc.n||0),sd:Math.max(rc.sd||0,lc.sd||0)};
+  }
+  const nMap=new Map();
+  for(const n of [...(remote.notifs||[]),...(D.notifs||[])])if(n&&n.id!=null)nMap.set(n.id,n);
+  D.notifs=[...nMap.values()].sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,120);
+  const gMap=new Map();
+  for(const g of [...(remote.gifts||[]),...(D.gifts||[])])if(g&&g.id)gMap.set(g.id,g);
+  D.gifts=[...gMap.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  D.id=Math.max(D.id||1,remote.id||1,D.posts.length+5);
+  try{localStorage.setItem(K,JSON.stringify(D))}catch(e){}
+  if(D.posts.length>prevLen)toast("✨ Нові дописи в стрічці");
+  render();
+}
+
+async function fbPull(){
+  if(pulling)return;
+  pulling=true;
+  try{
+    const snap=await get(stateRef);
+    if(snap.exists())mergeRemote(snap.val());
+  }catch(e){}finally{pulling=false}
+}
+
+async function fbPush(){
+  try{
+    await set(stateRef,D);
+    dbOnline=true;
+  }catch(e){}
+}
+
+onValue(stateRef,snap=>{
+  if(snap.exists())mergeRemote(snap.val());
+},()=>{});
+
+const save=()=>{
+  try{localStorage.setItem(K,JSON.stringify(D))}catch(e){toast("Сховище переповнене")}
+  fbPush();
+};
+
 const me=()=>D.users[SID],isA=u=>u&&u.role!=="user",day=()=>Math.floor((Date.now()-new Date().getTimezoneOffset()*6e4)/864e5);
-const IC={live:'<circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 010 8.4M7.8 16.2a6 6 0 010-8.4M19 5a10 10 0 010 14M5 19A10 10 0 015 5"/>',home:'<path d="M3 11l9-8 9 8v10h-6v-6H9v6H3z"/>',search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>',chat:'<path d="M21 12a8 8 0 01-11.6 7L4 20l1.1-4.6A8 8 0 1121 12z"/>',user:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',bell:'<path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 21h4"/>',heart:'<path d="M12 21s-8-5-8-11a4.5 4.5 0 018-2.7A4.5 4.5 0 0120 10c0 6-8 11-8 11z"/>',rep:'<path d="M17 2l4 4-4 4M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 01-3 3H3"/>',moon:'<path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z"/>',send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',back:'<path d="M15 18l-6-6 6-6"/>',plus:'<path d="M12 5v14M5 12h14"/>',trash:'<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',x:'<path d="M18 6L6 18M6 6l12 12"/>',shield:'<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>'};
+const IC={live:'<circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 010 8.4M7.8 16.2a6 6 0 010-8.4M19 5a10 10 0 010 14M5 19A10 10 0 015 5"/>',home:'<path d="M3 11l9-8 9 8v10h-6v-6H9v6H3z"/>',search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>',chat:'<path d="M21 12a8 8 0 01-11.6 7L4 20l1.1-4.6A8 8 0 1121 12z"/>',user:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',bell:'<path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 21h4"/>',heart:'<path d="M12 21s-8-5-8-11a4.5 4.5 0 018-2.7A4.5 4.5 0 0120 10c0 6-8 11-8 11z"/>',rep:'<path d="M17 2l4 4-4 4M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 01-3 3H3"/>',moon:'<path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z"/>',send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',back:'<path d="M15 18l-6-6 6-6"/>',plus:'<path d="M12 5v14M5 12h14"/>',trash:'<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',x:'<path d="M18 6L6 18M6 6l12 12"/>',shield:'<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',sync:'<path d="M21 12a9 9 0 01-15.5 6.4L3 16M3 12a9 9 0 0115.5-6.4L21 8M3 21v-5h5M21 3v5h-5"/>'};
 const ic=(n,f)=>`<svg width="22" height="22" viewBox="0 0 24 24" fill="${f?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n==="comment"?"chat":n]}</svg>`;
 const VB='<svg class="vb" viewBox="0 0 24 24" role="img" aria-label="Верифіковано"><path d="M12 2l2.4 2 3.1-.3.9 3 2.7 1.6-1 3 1 3-2.7 1.6-.9 3-3.1-.3L12 22l-2.4-2-3.1.3-.9-3L3 15.7l1-3-1-3 2.7-1.6.9-3 3.1.3z" fill="#6C4DFF"/><path d="M8 12l3 3 5-6" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const FL='<span class="fl" aria-hidden="true">🔥</span>';
@@ -210,14 +298,14 @@ function hc(){const a=[...EM].sort(()=>Math.random()-.5).slice(0,6);H={a,t:a[Mat
 const hg=()=>H.a.map(e=>`<button type="button" class="hb ${H.ok&&e===H.t?"ok":""}" data-a="hc" data-id="${e}" aria-label="${e}">${e}</button>`).join("");
 const V={tab:"home",ft:"all",limit:6,q:"",chat:null,pf:null,open:{},mode:Object.keys(D.users).length?"log":"reg",err:"",compose:0,draft:"",file:null,fu:null,pop:0,anim:1,gift:0,ls:null,rs:null,live:null,watch:null,lc:{}};
 function auth(){if(!H)hc();const r=V.mode==="reg",first=!Object.keys(D.users).length;
-return`<div class="au"><section class="hero"><div class="row">${logo(40)}</div><h1>Спілкуйся. Діляйся. Будь поруч.</h1><p>MIB — мережа для справжніх людей: з верифікацією, чатами та вогниками.</p><ul class="feat"><li>🔥 Вогники в чатах, як у TikTok</li><li>✅ Фото й відео — від верифікованих людей</li><li>💬 Живі розмови з друзями</li></ul></section><section class="card form"><div class="seg"><button class="${r?"on":""}" data-a="mode" data-id="reg">Реєстрація</button><button class="${r?"":"on"}" data-a="mode" data-id="log" ${first?"disabled":""}>Вхід</button></div><h2>${r?"Створіть акаунт":"З поверненням!"}</h2>${first&&r?'<p class="note">Перший акаунт на цьому пристрої стає <b>Developer</b>: ви верифікуєте людей і видаєте права адміна.</p>':""}${r?`<label for="n">Ім’я</label><input id="n" autocomplete="name" maxlength="40" placeholder="Як вас звати?"><label for="h">Нікнейм</label><input id="h" placeholder="username" autocapitalize="none" autocomplete="username" maxlength="20">`:`<label for="h">Нікнейм</label><input id="h" autocapitalize="none" autocomplete="username">`}<label for="p">Пароль</label><div class="pw"><input id="p" type="password" autocomplete="${r?"new-password":"current-password"}" data-enter="go"><button type="button" data-a="eye">Показати</button></div>${r?`<div class="meter" id="mt"><i></i><i></i><i></i><i></i></div><label>Я людина: натисніть ${H.t}</label><div class="hg" id="hg">${hg()}</div><input id="web" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">`:""}<p class="err" id="er" role="alert">${esc(V.err)}</p><button class="btn" style="width:100%;min-height:50px" data-a="go">${r?"Створити акаунт":"Увійти"}</button><p class="sm" style="margin:10px 0 0">Дані зберігаються лише в цьому браузері.</p></section></div>`}
+return`<div class="au"><section class="hero"><div class="row">${logo(40)}</div><h1>Спілкуйся. Діляйся. Будь поруч.</h1><p>MIB — мережа для справжніх людей: з верифікацією, чатами та вогниками.</p><ul class="feat"><li>🔥 Вогники в чатах, як у TikTok</li><li>✅ Фото й відео — від верифікованих людей</li><li>💬 Живі розмови з друзями</li></ul></section><section class="card form"><div class="seg"><button class="${r?"on":""}" data-a="mode" data-id="reg">Реєстрація</button><button class="${r?"":"on"}" data-a="mode" data-id="log" ${first?"disabled":""}>Вхід</button></div><h2>${r?"Створіть акаунт":"З поверненням!"}</h2>${first&&r?'<p class="note">Перший акаунт стає <b>Developer</b>: ви верифікуєте людей і видаєте права адміна.</p>':""}${r?`<label for="n">Ім’я</label><input id="n" autocomplete="name" maxlength="40" placeholder="Як вас звати?"><label for="h">Нікнейм</label><input id="h" placeholder="username" autocapitalize="none" autocomplete="username" maxlength="20">`:`<label for="h">Нікнейм</label><input id="h" autocapitalize="none" autocomplete="username">`}<label for="p">Пароль</label><div class="pw"><input id="p" type="password" autocomplete="${r?"new-password":"current-password"}" data-enter="go"><button type="button" data-a="eye">Показати</button></div>${r?`<div class="meter" id="mt"><i></i><i></i><i></i><i></i></div><label>Я людина: натисніть ${H.t}</label><div class="hg" id="hg">${hg()}</div><input id="web" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">`:""}<p class="err" id="er" role="alert">${esc(V.err)}</p><button class="btn" style="width:100%;min-height:50px" data-a="go">${r?"Створити акаунт":"Увійти"}</button><p class="sm" style="margin:10px 0 0">${dbOnline?"Firebase Realtime Database підключена.":"Синхронізація з Firebase (mibb-6f734)."}</p></section></div>`}
 const cm=o=>`<div class="cm">${o.c.map(c=>{const w=D.users[c.u];return w?`<p><button class="lk" data-a="pf" data-id="${w.id}">${nm(w)}</button> ${esc(c.t)}</p>`:""}).join("")}<div class="row"><input id="c-${o.id}" placeholder="Ваш коментар…" aria-label="Коментар" maxlength="300" data-enter="sc" data-id="${o.id}"><button class="ib" data-a="sc" data-id="${o.id}" aria-label="Надіслати">${ic("send")}</button></div></div>`;
 function card(p,i){const o=p.rep?D.posts.find(x=>x.id===p.rep):p,u=o&&D.users[o.u];if(!u||(u.ban&&!isA(me())))return"";const ru=p.rep&&D.users[p.u],lk=o.l.includes(SID),rp=D.posts.some(x=>x.rep===o.id&&x.u===SID);
 return`<article class="card rise" style="--i:${i||0}">${ru?`<div class="sm rt">${ic("rep")} ${esc(ru.n)} поширив(-ла)</div>`:""}<div class="row"><button class="lk row" data-a="pf" data-id="${u.id}">${av(u)}<span class="col"><span>${nm(u)}</span><span class="sm">@${esc(u.h)} · ${ago(o.ts)}</span></span></button><span class="grow"></span>${p.u===SID||isA(me())?`<button class="ib" data-a="del" data-id="${p.id}" aria-label="Видалити">${ic("trash")}</button>`:""}</div>${o.t?`<p class="txt">${esc(o.t)}</p>`:""}${o.m?`<div class="md" data-id="${o.id}">${o.m.t==="v"?`<video data-m="${o.m.k}" controls playsinline preload="none"></video>`:`<img data-m="${o.m.k}" loading="lazy" decoding="async" alt="Фото від ${esc(u.n)}">`}</div>`:""}<div class="acts"><button class="ib like ${lk?"on":""} ${V.pop===o.id?"pop":""}" data-a="like" data-id="${o.id}" aria-label="Лайк" aria-pressed="${lk}">${ic("heart",lk)}<span>${o.l.length}</span></button><button class="ib" data-a="cmt" data-id="${o.id}" aria-label="Коментарі">${ic("comment")}<span>${o.c.length}</span></button><button class="ib ${rp?"on":""}" data-a="rep" data-id="${o.id}" aria-label="Репост" aria-pressed="${rp}">${ic("rep")}<span>${D.posts.filter(x=>x.rep===o.id).length}</span></button></div>${V.open[o.id]?cm(o):""}</article>`}
 function home(){const f=D.follow[SID]||[],l=D.posts.filter(p=>V.ft==="all"||p.u===SID||f.includes(p.u)).sort((a,b)=>b.ts-a.ts),s=l.slice(0,V.limit);
 return`${riskBox()}<div class="seg rise" role="tablist">${[["all","Для вас"],["fol","Підписки"]].map(x=>`<button class="${V.ft===x[0]?"on":""}" data-a="ft" data-id="${x[0]}" role="tab" aria-selected="${V.ft===x[0]}">${x[1]}</button>`).join("")}</div>`+(s.map(card).join("")||`<div class="card empty rise"><div class="big">✨</div><h2>Тут поки тихо</h2><p class="sm">${V.ft==="all"?"Опублікуйте перший допис і запросіть друзів.":"Підпишіться на людей у розділі «Огляд»."}</p><button class="btn" data-a="new">Створити допис</button></div>`)+(l.length>V.limit?'<div id="sent" class="sm" style="text-align:center">Завантаження…</div>':"")}
 function people(){const q=V.q.toLowerCase(),f=D.follow[SID]||[],us=Object.values(D.users).filter(u=>u.id!==SID&&(u.n+" "+u.h).toLowerCase().includes(q));
-return us.map(u=>`<div class="card row rise"><button class="lk row grow" data-a="pf" data-id="${u.id}">${av(u)}<span class="col"><span>${nm(u)}</span><span class="sm">@${esc(u.h)}</span></span></button><button class="btn sml ${f.includes(u.id)?"o":""}" data-a="fol" data-id="${u.id}">${f.includes(u.id)?"Ви підписані":"Підписатися"}</button><button class="ib" data-a="oc" data-id="${u.id}" aria-label="Написати">${ic("chat")}</button></div>`).join("")||'<div class="card sm">Тут поки лише ви. Попросіть друзів зареєструватися, і вони з’являться в списку.</div>'}
+return us.map(u=>`<div class="card row rise"><button class="lk row grow" data-a="pf" data-id="${u.id}">${av(u)}<span class="col"><span>${nm(u)}</span><span class="sm">@${esc(u.h)}</span></span></button><button class="btn sml ${f.includes(u.id)?"o":""}" data-a="fol" data-id="${u.id}">${f.includes(u.id)?"Ви підписані":"Підписатися"}</button><button class="ib" data-a="oc" data-id="${u.id}" aria-label="Написати">${ic("chat")}</button></div>`).join("")||'<div class="card sm">Тут поки нікого іншого немає.</div>'}
 const explore=()=>`<label for="q" style="margin:0 0 6px">Пошук людей</label><input id="q" value="${esc(V.q)}" placeholder="Ім’я або @нікнейм" style="margin-bottom:12px"><div id="pl">${people()}</div>`;
 function chats(){if(V.chat)return room();const ids=new Set(D.follow[SID]||[]);Object.keys(D.chats).forEach(k=>{const a=k.split("|");if(a.includes(SID))ids.add(a.find(x=>x!==SID))});
 const lt=c=>c&&c.m.length?c.m[c.m.length-1].ts:0,l=[...ids].filter(i=>D.users[i]).map(i=>({u:D.users[i],c:D.chats[ck(i)]})).sort((a,b)=>lt(b.c)-lt(a.c));
@@ -241,7 +329,7 @@ function live(){const m=me();
 if(V.ls||V.watch){const s=LV[V.ls?V.live:V.watch],h=s&&D.users[s.u];if(!h)return`<div class="card empty"><h2>Ефір завершено</h2><button class="btn" data-a="lx">Назад</button></div>`;
 const lc=V.lc[s.id]||[],host=!!V.ls;
 return`<div class="card"><div class="lvw"><video id="lv" autoplay playsinline ${host?"muted":""}></video><span class="lbadge">🔴 LIVE · 👁 ${s.n}</span></div><div class="row" style="margin-top:8px">${av(h,36)}<div class="grow"><div>${nm(h)}</div><div class="sm">${esc(s.t)}</div></div><button class="btn sml o" data-a="${host?"lend":"lx"}">${host?"Завершити":"Вийти"}</button></div><div class="lc" id="lcb">${lc.map(c=>{const w=D.users[c.u];return`<p><b>${w?esc(w.n):"?"}</b> ${esc(c.t)}</p>`}).join("")||'<p class="sm">Напишіть перше повідомлення…</p>'}</div><div class="row"><input id="sg" placeholder="Повідомлення в ефір…" maxlength="200" data-enter="lsend" aria-label="Повідомлення в ефір">${!host&&s.u!==SID?`<button class="ib" data-a="gv" data-id="${s.u}" aria-label="Подарунок">🎁</button>`:""}<button class="ib" data-a="lheart" aria-label="Серце">❤️</button><button class="btn" data-a="lsend" aria-label="Надіслати">${ic("send")}</button></div></div>`}
-return`<h2>Прямі ефіри</h2><div class="note">Ефіри працюють між вкладками цього браузера. Щоб дивитися з інших пристроїв, потрібен сервер.</div>${m.ver?`<div class="card"><label for="lt" style="margin-top:0">Назва ефіру</label><input id="lt" maxlength="60" placeholder="Про що ефір?"><button class="btn" style="margin-top:10px" data-a="golive">🔴 Почати ефір</button></div>`:'<div class="note">Вести ефір можуть лише верифіковані люди. Подайте заявку в профілі.</div>'}${sl().map(s=>{const h=D.users[s.u];return h?`<div class="card row rise">${av(h)}<div class="grow"><div>${nm(h)}</div><div class="sm">${esc(s.t)} · 👁 ${s.n}</div></div><button class="btn sml" data-a="watch" data-id="${s.id}">Дивитись</button></div>`:""}).join("")||'<div class="card sm">Зараз ніхто не веде ефір.</div>'}`}
+return`<h2>Прямі ефіри</h2><div class="note">Ефіри працюють між вкладками цього браузера.</div>${m.ver?`<div class="card"><label for="lt" style="margin-top:0">Назва ефіру</label><input id="lt" maxlength="60" placeholder="Про що ефір?"><button class="btn" style="margin-top:10px" data-a="golive">🔴 Почати ефір</button></div>`:'<div class="note">Вести ефір можуть лише верифіковані люди. Подайте заявку в профілі.</div>'}${sl().map(s=>{const h=D.users[s.u];return h?`<div class="card row rise">${av(h)}<div class="grow"><div>${nm(h)}</div><div class="sm">${esc(s.t)} · 👁 ${s.n}</div></div><button class="btn sml" data-a="watch" data-id="${s.id}">Дивитись</button></div>`:""}).join("")||'<div class="card sm">Зараз ніхто не веде ефір.</div>'}`}
 function mkpc(cid,host){const pc=new RTCPeerConnection(ICE);pc.q=Promise.resolve();P[cid]=pc;pc.onicecandidate=e=>{if(e.candidate)sig(cid,{c:e.candidate})};
 if(host)V.ls.getTracks().forEach(t=>pc.addTrack(t,V.ls));else pc.ontrack=e=>{V.rs=e.streams[0];const v=$("#lv");if(v){v.srcObject=V.rs;v.play().catch(()=>{})}};return pc}
 async function onSig(from,d){
@@ -272,17 +360,19 @@ return`<div class="card rise"><h2>Статистика</h2><div class="stats"><s
 function shop(){const m=me(),sec=[["fr","Рамки аватара"],["th","Теми профілю"],["bd","Значки біля імені"]];
 return`<h2>Магазин</h2><div class="note">💗 Баланс: <b>${m.bal}</b>. Лайки можна отримати в подарунок від друзів.</div>${sec.map(([c,t])=>`<h2>${t}</h2><div class="gg">${Object.entries(SH).filter(([k,x])=>x[0]===c).map(([k,x])=>{const has=m.own.includes(k),on=m.eq[c]===k,pv=c==="fr"?`<span class="av ${k}" style="--s:48px;background:var(--g)">M</span>`:c==="th"?`<span class="pv" style="background-image:${x[3]}"></span>`:`<span class="pv">${x[3]}</span>`;return`<div class="gb">${pv}<b>${x[1]}</b>${has?`<button class="btn sml ${on?"o":""}" data-a="eq" data-id="${k}">${on?"Зняти":"Одягнути"}</button>`:`<button class="btn sml" data-a="buy" data-id="${k}" ${m.bal<x[2]?"disabled":""}>💗 ${x[2]}</button>`}</div>`}).join("")}</div>`).join("")}`}
 function shell(){const b=D.notifs.filter(n=>n.to===SID&&!n.r).length,it=[["home","home","Головна"],["explore","search","Огляд"],["new","plus","Створити"],["chats","chat","Чати"],["me","user","Профіль"]],views={home,explore,chats,notifs,me:()=>prof(SID),prof:()=>prof(V.pf),admin,live,shop};
-return`<div class="shell"><header><span class="hl">${logo()}</span><div class="row hr"><button class="ib bal" data-a="tab" data-id="me" aria-label="Баланс лайків">💗 ${me().bal}</button><button class="ib" data-a="tab" data-id="live" aria-label="Прямі ефіри">${ic("live")}${sl().length?'<span class="dot"></span>':""}</button><button class="ib" data-a="tab" data-id="notifs" aria-label="Сповіщення">${ic("bell")}${b?`<span class="bd">${b}</span>`:""}</button><button class="ib" data-a="theme" aria-label="Змінити тему">${ic("moon")}</button></div></header><main>${(views[V.tab]||home)()}</main><nav aria-label="Навігація"><div><span class="nl">${logo()}</span>${it.map(x=>`<button class="ib ${x[0]==="new"?"fab":""} ${V.tab===x[0]?"on":""}" data-a="${x[0]==="new"?"new":"tab"}" data-id="${x[0]}" aria-label="${x[2]}">${ic(x[1])}<span class="lb">${x[2]}</span></button>`).join("")}</div></nav></div>${V.compose?compose():""}${V.gift&&D.users[V.gift]?giftSheet():""}`}
+return`<div class="shell"><header><span class="hl">${logo()}</span><div class="row hr"><button class="ib" data-a="sync" aria-label="Оновити" title="Оновити">${ic("sync")}</button><button class="ib bal" data-a="tab" data-id="me" aria-label="Баланс лайків">💗 ${me().bal}</button><button class="ib" data-a="tab" data-id="live" aria-label="Прямі ефіри">${ic("live")}${sl().length?'<span class="dot"></span>':""}</button><button class="ib" data-a="tab" data-id="notifs" aria-label="Сповіщення">${ic("bell")}${b?`<span class="bd">${b}</span>`:""}</button><button class="ib" data-a="theme" aria-label="Змінити тему">${ic("moon")}</button></div></header><main>${(views[V.tab]||home)()}</main><nav aria-label="Навігація"><div><span class="nl">${logo()}</span>${it.map(x=>`<button class="ib ${x[0]==="new"?"fab":""} ${V.tab===x[0]?"on":""}" data-a="${x[0]==="new"?"new":"tab"}" data-id="${x[0]}" aria-label="${x[2]}">${ic(x[1])}<span class="lb">${x[2]}</span></button>`).join("")}</div></nav></div>${V.compose?compose():""}${V.gift&&D.users[V.gift]?giftSheet():""}`}
 let obs;function render(){if(SID&&D.users[SID]&&D.users[SID].ban){SID=null;localStorage.removeItem("mib:s");toast("Ваш акаунт заблоковано")}const f=document.activeElement,id=f&&f.id,val=f&&f.value;const a=$("#app");a.innerHTML=SID?shell():auth();a.className=V.anim?"an":"";V.anim=0;
 if(id&&/^(mi|np|q|lt|sg|c-.+)$/.test(id)){const e=document.getElementById(id);if(e){e.value=val;e.focus()}}
 hyd();const lv=$("#lv");if(lv){lv.srcObject=V.ls||V.rs||null;lv.play().catch(()=>{})}if(obs)obs.disconnect();const s=$("#sent");if(s&&"IntersectionObserver"in window){obs=new IntersectionObserver(e=>{if(e[0].isIntersecting){V.limit+=6;render()}});obs.observe(s)}
 if(SID&&V.tab==="chats"&&V.chat){const c=D.chats[ck(V.chat)];if(c){c.v=c.v||{};if((c.v[SID]||0)<Date.now()-2e3){c.v[SID]=Date.now();save()}}}}
 const pe=()=>{const u=me(),n=$("#en"),b=$("#eb");if(n&&n.value.trim())u.n=n.value.trim();if(b)u.b=b.value.trim()};
 const A={
+async sync(){await fbPull();toast("Оновлено")},
 eye(i,b){const p=$("#p"),h=p.type==="password";p.type=h?"text":"password";b.textContent=h?"Сховати":"Показати"},
 hc(e){if(e===H.t){H.ok=1}else{hc();toast("Спробуйте ще раз");$("#hg").previousElementSibling.textContent="Я людина: натисніть "+H.t}$("#hg").innerHTML=hg()},
 mode(i){V.mode=i;V.err="";H=0;V.anim=1;render()},
-async go(){const h=$("#h").value.trim().replace(/^@/,"").toLowerCase(),p=$("#p").value;
+async go(){await fbPull();
+const h=$("#h").value.trim().replace(/^@/,"").toLowerCase(),p=$("#p").value;
 if(V.mode==="reg"){const n=$("#n").value.trim();if($("#web").value)return;
 if(!n||!/^[a-z0-9_]{3,20}$/.test(h))return er("Вкажіть ім’я та нікнейм (3–20 латинських літер, цифр або _).");
 if(p.length<6)return er("Пароль закороткий (мінімум 6 символів).");
@@ -290,9 +380,9 @@ if(Object.values(D.users).some(u=>u.h===h))return er("Цей нікнейм уж
 if(!H.ok)return er("Пройдіть перевірку «Я людина».");
 if(Date.now()-H.ts<2500)return er("Занадто швидко. Спробуйте ще раз.");
 const first=!Object.keys(D.users).length,id="u"+D.id++;D.users[id]={id,n,h,b:"",hu:Math.floor(Math.random()*360),role:first?"dev":"user",ver:first?1:0,req:0,ph:await sha(h+":"+p),ts:Date.now(),lp:0,bal:10,own:[],eq:{}};D.follow[id]=[];SID=id;save()}
-else{const u=Object.values(D.users).find(x=>x.h===h);if(!u||u.ph!==await sha(h+":"+p))return er("Невірний нікнейм або пароль.");if(u.ban)return er("Акаунт заблоковано.");SID=u.id}
+else{const u=Object.values(D.users).find(x=>x.h===h);if(!u||u.ph!==await sha(h+":"+p))return er("Невірний нікнейм або пароль.");if(u.ban)return er("Акаунт заблоковано.");SID=u.id;save()}
 localStorage.setItem("mib:s",JSON.stringify(SID));V.tab="home";V.err="";V.anim=1;render()},
-tab(i){if(i!==V.tab)hp();V.tab=i;V.chat=null;if(i==="me")V.pf=SID;V.anim=1;render();scrollTo(0,0)},
+tab(i){if(i!==V.tab)hp();V.tab=i;V.chat=null;if(i==="me")V.pf=SID;V.anim=1;fbPull();render();scrollTo(0,0)},
 theme(){const d=document.documentElement,dk=d.dataset.theme?d.dataset.theme==="dark":matchMedia("(prefers-color-scheme:dark)").matches;d.dataset.theme=dk?"light":"dark";try{localStorage.setItem("mib:t",d.dataset.theme)}catch(e){}},
 ft(i){V.ft=i;V.limit=6;V.anim=1;render()},
 like(i){const p=D.posts.find(x=>x.id===i),k=p.l.indexOf(SID);if(k<0){p.l.push(SID);ntf(p.u,"like");V.pop=i;vib(12)}else p.l.splice(k,1);save();render();V.pop=0},
@@ -308,6 +398,7 @@ async post(){const m=me(),t=V.draft.trim(),f=V.file;if(!t&&!f)return toast("На
 const w=Math.ceil((m.lp+15e3-Date.now())/1e3);if(w>0)return toast("Зачекайте "+w+" с перед наступним дописом");
 if(f&&!m.ver)return toast("Фото й відео — лише для верифікованих людей");
 let md=null;if(f){const k="m"+D.id++,v=f.type.startsWith("video");if(!await mput(k,v?f:await shrink(f)))return toast("Не вдалося зберегти медіа");md={k,t:v?"v":"i"}}
+await fbPull();
 D.posts.unshift({id:"p"+D.id++,u:SID,t,m:md,ts:Date.now(),l:[],c:[]});m.lp=Date.now();save();V.anim=1;A.cx();toast("Опубліковано ✨")},
 fol(i){const f=D.follow[SID]=D.follow[SID]||[],k=f.indexOf(i);if(k<0){f.push(i);ntf(i,"fol")}else f.splice(k,1);save();render()},
 pf(i){hp();V.pf=i;V.tab=i===SID?"me":"prof";V.chat=null;V.anim=1;render();scrollTo(0,0)},
@@ -352,9 +443,10 @@ addEventListener("focusout",()=>setTimeout(()=>{if(!/^(INPUT|TEXTAREA)$/.test((d
 addEventListener("storage",e=>{if(e.key===K){D=LS(K,D);if(SID&&!D.users[SID])SID=null;render()}});
 const th=localStorage.getItem("mib:t");if(th)document.documentElement.dataset.theme=th;
 render();
+fbPull();
 setTimeout(()=>{const x=$("#splash");if(x){x.classList.add("out");setTimeout(()=>x.remove(),600)}},1800);
 setTimeout(()=>{if(SID){const r=risks();if(r.length)toast("🔥 Вогник з "+r[0].u.n+" згасне за ~"+r[0].h+" год")}},2600);
 setInterval(()=>{if(!SID||!("Notification"in window)||Notification.permission!=="granted")return;risks().forEach(x=>{const k="mib:rm:"+SID+x.u.id+day();if(x.h<=3&&!localStorage.getItem(k)){localStorage.setItem(k,1);try{new Notification("MIB 🔥",{body:"Ще ~"+x.h+" год, щоб зберегти вогник "+x.n+" дн. з "+x.u.n})}catch(e){toast("🔥 Вогник з "+x.u.n+" згасне за ~"+x.h+" год")}}})},6e4);
 </script>
 </body>
-  </html>
+</html>
